@@ -1,0 +1,36 @@
+<!doctype html>
+<title>Admin</title>
+<h1>Admin</h1>
+<a href="{{ url_for('logout') }}">Logout</a>
+
+<h2>Create User</h2>
+<form method="post">
+  <input type="hidden" name="action" value="create_user">
+  <input type="text" name="username" placeholder="Username" required>
+  <input type="password" name="password" placeholder="Password" required>
+  <label><input type="checkbox" name="is_admin"> Admin</label>
+  <button type="submit">Create</button>
+</form>
+
+<h2>Upload Document</h2>
+<form method="post" enctype="multipart/form-data">
+  <input type="hidden" name="action" value="upload_document">
+  <input type="file" name="document" required>
+  <button type="submit">Upload</button>
+</form>
+
+<h2>Assign Document</h2>
+<form method="post">
+  <input type="hidden" name="action" value="assign_document">
+  <select name="user_id">
+    {% for user in users %}
+    <option value="{{ user.id }}">{{ user.username }}</option>
+    {% endfor %}
+  </select>
+  <select name="doc_id">
+    {% for doc in docs %}
+    <option value="{{ doc.id }}">{{ doc.filename }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Assign</button>
+</form>
