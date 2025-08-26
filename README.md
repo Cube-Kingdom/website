@@ -4,7 +4,7 @@ Einfaches PHP-Projekt mit einer Adminoberfläche zum Hochladen von Dokumenten, z
 
 ## Setup
 
-Voraussetzungen sind PHP (mit SQLite-Erweiterung) sowie ein Webserver wie Apache 2. Beim ersten Aufruf wird eine SQLite-Datenbank samt Standard-Admin (`admin`/`admin`) erstellt.
+Voraussetzungen sind PHP (mit SQLite-Erweiterung) sowie ein Webserver wie Apache 2. Beim ersten Aufruf wird eine SQLite-Datenbank samt Standard-Admin (`admin`/`admin`) erstellt.
 
 Zum schnellen Testen kann der eingebaute PHP-Server genutzt werden:
 
