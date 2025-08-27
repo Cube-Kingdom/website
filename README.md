@@ -39,7 +39,7 @@ Es bietet Bewerbern eine einfache Möglichkeit, sich online zu bewerben, und Adm
 ## ⚙️ Installation & Setup
 ### 1. Repository klonen
 ```bash
-git clone https://github.com/<dein-username>/extrahelden.git
+git clone https://github.com/Cube-Kingdom/website.git
 cd extrahelden
 ```
 
@@ -52,9 +52,9 @@ cd extrahelden
 ```apache
 <VirtualHost *:80>
     ServerName extrahelden.local
-    DocumentRoot /var/www/extrahelden
+    DocumentRoot /var/www/html
 
-    <Directory /var/www/extrahelden>
+    <Directory /var/www/html>
         AllowOverride All
         Require all granted
     </Directory>
