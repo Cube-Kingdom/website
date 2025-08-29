@@ -1,3 +1,4 @@
 uploads/*
+impressum.html
 !uploads/.gitkeep
 database.sqlite
