@@ -1,4 +1,4 @@
-# Website
+# Website von Minecraft Extrahelden
 
 Ein kleines PHP-basiertes Webportal für Minecraft Extrahelden.
 
