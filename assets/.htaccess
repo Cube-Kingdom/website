@@ -1,0 +1,5 @@
+RewriteEngine On
+
+# Alles in /assets/ auf index.php umleiten
+RewriteCond %{REQUEST_URI} ^/assets
+RewriteRule ^.*$ /index.php [L,R=302]

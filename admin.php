@@ -1,5 +1,5 @@
 <?php
-// admin.php – Verwaltung inkl. Bewerbungen (Kachel-Übersicht + Engere Auswahl), Nutzerverwaltung, Discord/Whitelist
+// admin.php – Verwaltung inkl. Mehrfach-Upload & öffentliche Dokumente (is_public)
 declare(strict_types=1);
 require __DIR__ . '/db.php';
 require __DIR__ . '/_layout.php';
@@ -21,7 +21,7 @@ if (!function_exists('str_starts_with')) {
 function ensure_schema(): void {
     $pdo = db();
 
-    // applications (mit project_name / generated_password / created_user_id)
+    // applications – sicherstellen, dass alle Felder existieren
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS applications (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,54 +37,39 @@ function ensure_schema(): void {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
     ");
-    $cols  = $pdo->query("PRAGMA table_info(applications)")->fetchAll();
+    $cols  = $pdo->query('PRAGMA table_info(applications)')->fetchAll();
     $names = array_map(fn($r)=>$r['name'], $cols);
     if (!in_array('generated_password', $names, true)) $pdo->exec("ALTER TABLE applications ADD COLUMN generated_password TEXT");
     if (!in_array('created_user_id',   $names, true)) $pdo->exec("ALTER TABLE applications ADD COLUMN created_user_id INTEGER");
     if (!in_array('project_name',      $names, true)) $pdo->exec("ALTER TABLE applications ADD COLUMN project_name TEXT");
 
-    // Einmalbewerbung-Indices
-    $pdo->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_app_unique_mc ON applications(lower(mc_name));");
-    $pdo->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_app_unique_discord ON applications(lower(discord_name));");
+    // Einmalbewerbung-Indices (best effort)
+    try { $pdo->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_app_unique_mc ON applications(lower(mc_name));"); } catch (Throwable $e) {}
+    try { $pdo->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_app_unique_discord ON applications(lower(discord_name));"); } catch (Throwable $e) {}
 
-    // users.discord_name nachrüsten
-    $uCols  = $pdo->query("PRAGMA table_info(users)")->fetchAll();
+    // users.discord_name (falls altes Schema)
+    $uCols  = $pdo->query('PRAGMA table_info(users)')->fetchAll();
     $uNames = array_map(fn($r)=>$r['name'], $uCols);
-    if (!in_array('discord_name', $uNames, true)) {
-        $pdo->exec("ALTER TABLE users ADD COLUMN discord_name TEXT");
-    }
+    if (!in_array('discord_name', $uNames, true)) $pdo->exec("ALTER TABLE users ADD COLUMN discord_name TEXT");
 
-    // posts.image_path (Titelbild)
-    $pCols  = $pdo->query("PRAGMA table_info(posts)")->fetchAll();
+    // posts.image_path
+    $pCols  = $pdo->query('PRAGMA table_info(posts)')->fetchAll();
     $pNames = array_map(fn($r)=>$r['name'], $pCols);
-    if (!in_array('image_path', $pNames, true)) {
-        $pdo->exec("ALTER TABLE posts ADD COLUMN image_path TEXT");
-    }
+    if (!in_array('image_path', $pNames, true)) $pdo->exec("ALTER TABLE posts ADD COLUMN image_path TEXT");
 
-    // Whitelist-Gedächtnis
+    // Whitelist-Monitor
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS server_whitelist_seen (
           uuid TEXT PRIMARY KEY,
           first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
     ");
+
+    // Hinweis: Spalte documents.is_public wird in db.php nachgerüstet.
 }
 ensure_schema();
 
 /* ---------- Hilfsfunktionen ---------- */
-if (!function_exists('server_swap_sort')) {
-    function server_swap_sort(int $idA, int $idB): void {
-        $pdo = db();
-        $pdo->beginTransaction();
-        $a = $pdo->prepare("SELECT id, sort_order FROM minecraft_servers WHERE id=?"); $a->execute([$idA]); $ra = $a->fetch();
-        $b = $pdo->prepare("SELECT id, sort_order FROM minecraft_servers WHERE id=?"); $b->execute([$idB]); $rb = $b->fetch();
-        if ($ra && $rb) {
-            $pdo->prepare("UPDATE minecraft_servers SET sort_order=? WHERE id=?")->execute([$rb['sort_order'], $ra['id']]);
-            $pdo->prepare("UPDATE minecraft_servers SET sort_order=? WHERE id=?")->execute([$ra['sort_order'], $rb['id']]);
-        }
-        $pdo->commit();
-    }
-}
 if (!function_exists('generate_password')) {
     function generate_password(int $len = 12): string {
         $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
@@ -93,7 +78,7 @@ if (!function_exists('generate_password')) {
     }
 }
 
-/* ---------- Discord-Helper (mit Guards) ---------- */
+/* ---------- Discord-Helper ---------- */
 if (!function_exists('discord_cfg')) {
     function discord_cfg(): array {
         return [
@@ -274,34 +259,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 flash('Passwort gesetzt.','success');
             }
 
-        // Dokumente
-        } elseif ($a === 'upload_document') {
+        // Mehrfach-Upload
+        } elseif ($a === 'upload_documents') {
             global $UPLOADS;
-            $ok = isset($_FILES['document']) && $_FILES['document']['error']===UPLOAD_ERR_OK;
-            if (!$ok) flash('Upload fehlgeschlagen.','error');
-            else {
-                $name = basename((string)$_FILES['document']['name']);
-                $safe = preg_replace('/[^A-Za-z0-9._-]/','_',$name) ?: ('file_'.time());
-                $target = $UPLOADS.'/'.$safe;
-                if (!move_uploaded_file($_FILES['document']['tmp_name'],$target)) flash('Konnte Datei nicht speichern.','error');
-                else { @chmod($target,0664); db()->prepare('INSERT INTO documents (filename,path) VALUES (?,?)')->execute([$safe,$target]); flash('Dokument hochgeladen.','success'); }
+            if (!isset($_FILES['documents'])) {
+                flash('Keine Dateien ausgewählt.','error');
+            } else {
+                $files = $_FILES['documents'];
+                $count = is_array($files['name']) ? count($files['name']) : 0;
+                $okCnt = 0;
+                for ($i=0; $i<$count; $i++) {
+                    if ((int)$files['error'][$i] !== UPLOAD_ERR_OK) continue;
+                    $name = basename((string)$files['name'][$i]);
+                    $safe = preg_replace('/[^A-Za-z0-9._-]/','_',$name) ?: ('file_'.time().'_'.$i);
+                    $target = $UPLOADS.'/'.$safe;
+                    if (move_uploaded_file($files['tmp_name'][$i], $target)) {
+                        @chmod($target, 0664);
+                        db()->prepare('INSERT INTO documents (filename,path,is_public) VALUES (?,?,0)')->execute([$safe,$target]);
+                        $okCnt++;
+                    }
+                }
+                if ($okCnt>0) flash("{$okCnt} Datei(en) hochgeladen.",'success'); else flash('Kein Upload erfolgt.','error');
             }
+
+        // Dokument zuweisen (inkl. „Alle (öffentlich)“)
         } elseif ($a === 'assign_document') {
-            $user_id=(int)($_POST['user_id']??0); $doc_id=(int)($_POST['doc_id']??0);
-            $st=db()->prepare('INSERT OR IGNORE INTO user_documents (user_id,document_id) VALUES (?,?)'); $st->execute([$user_id,$doc_id]);
-            if ($st->rowCount()>0) {
-                $pdo=db();
-                $u=$pdo->prepare('SELECT username,discord_name FROM users WHERE id=?'); $u->execute([$user_id]); $usr=$u->fetch();
-                $disc=(string)($usr['discord_name']??'');
-                if ($disc==='') { $q=$pdo->prepare('SELECT discord_name FROM applications WHERE created_user_id=? ORDER BY datetime(created_at) DESC LIMIT 1'); $q->execute([$user_id]); $disc=(string)($q->fetch()['discord_name']??''); }
-                $d=$pdo->prepare('SELECT filename FROM documents WHERE id=?'); $d->execute([$doc_id]); $file=(string)($d->fetch()['filename']??'ein Dokument');
-                if ($disc!=='') discord_notify_by_name($disc,"📄 Dir wurde ein neues Dokument zugewiesen: **{$file}**.");
+            $userSel = (string)($_POST['user_id'] ?? '');
+            $doc_id  = (int)($_POST['doc_id'] ?? 0);
+            $isAll = (strtoupper($userSel) === 'ALL' || $userSel === 'public');
+
+            if ($doc_id <= 0) {
+                flash('Bitte Dokument wählen.','error');
+
+            } elseif ($isAll) {
+                db()->prepare('UPDATE documents SET is_public=1 WHERE id=?')->execute([$doc_id]);
+                flash('Dokument als „öffentlich“ markiert (World Downloads).','success');
+
+            } else {
+                $user_id = (int)$userSel;
+                $st = db()->prepare('INSERT OR IGNORE INTO user_documents (user_id,document_id) VALUES (?,?)');
+                $st->execute([$user_id,$doc_id]);
+                if ($st->rowCount()>0) {
+                    $pdo=db();
+                    $u=$pdo->prepare('SELECT username,discord_name FROM users WHERE id=?'); $u->execute([$user_id]); $usr=$u->fetch();
+                    $disc=(string)($usr['discord_name']??'');
+                    if ($disc==='') { $q=$pdo->prepare('SELECT discord_name FROM applications WHERE created_user_id=? ORDER BY datetime(created_at) DESC LIMIT 1'); $q->execute([$user_id]); $disc=(string)($q->fetch()['discord_name']??''); }
+                    $d=$pdo->prepare('SELECT filename FROM documents WHERE id=?'); $d->execute([$doc_id]); $file=(string)($d->fetch()['filename']??'ein Dokument');
+                    if ($disc!=='') discord_notify_by_name($disc,"📄 Dir wurde ein neues Dokument zugewiesen: **{$file}**.");
+                }
+                flash('Dokument zugewiesen.','success');
             }
-            flash('Dokument zugewiesen.','success');
+
         } elseif ($a === 'unassign_document') {
-            $user_id=(int)($_POST['user_id']??0); $doc_id=(int)($_POST['doc_id']??0);
-            db()->prepare('DELETE FROM user_documents WHERE user_id=? AND document_id=?')->execute([$user_id,$doc_id]);
-            flash('Zuweisung entfernt.','success');
+            $userSel = (string)($_POST['user_id']??'');
+            $doc_id  = (int)($_POST['doc_id']??0);
+            $isAll = (strtoupper($userSel) === 'ALL' || $userSel === 'public');
+
+            if ($doc_id <= 0) {
+                flash('Bitte Dokument wählen.','error');
+
+            } elseif ($isAll) {
+                db()->prepare('UPDATE documents SET is_public=0 WHERE id=?')->execute([$doc_id]);
+                flash('Öffentliche Freigabe entfernt.','success');
+
+            } else {
+                $user_id=(int)$userSel;
+                db()->prepare('DELETE FROM user_documents WHERE user_id=? AND document_id=?')->execute([$user_id,$doc_id]);
+                flash('Zuweisung entfernt.','success');
+            }
 
         // Posts / Server / Settings
         } elseif ($a === 'create_post') {
@@ -309,12 +334,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($title===''||$content==='') {
                 flash('Titel/Inhalt darf nicht leer sein.','error');
             } else {
-                // optionales Bild
                 $imageUrl = null;
                 if (isset($_FILES['post_image']) && $_FILES['post_image']['error'] === UPLOAD_ERR_OK) {
                     $tmp  = $_FILES['post_image']['tmp_name'];
                     $name = basename((string)$_FILES['post_image']['name']);
-
                     $finfo = @finfo_open(FILEINFO_MIME_TYPE);
                     $mime  = $finfo ? finfo_file($finfo, $tmp) : '';
                     if ($finfo) finfo_close($finfo);
@@ -323,54 +346,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $ext   = pathinfo($name, PATHINFO_EXTENSION) ?: 'img';
                         $base  = preg_replace('/[^A-Za-z0-9._-]/','_', pathinfo($name, PATHINFO_FILENAME)) ?: ('img_'.time());
                         $safe  = $base.'_'.substr(sha1((string)microtime(true)),0,6).'.'.$ext;
-
                         $dir = __DIR__.'/uploads/posts';
                         if (!is_dir($dir)) @mkdir($dir, 0775, true);
                         $dest = $dir.'/'.$safe;
-
-                        if (move_uploaded_file($tmp, $dest)) {
-                            @chmod($dest, 0664);
-                            $imageUrl = '/uploads/posts/'.$safe;
-                        } else {
-                            flash('Bild konnte nicht gespeichert werden.','error');
-                        }
+                        if (move_uploaded_file($tmp, $dest)) { @chmod($dest, 0664); $imageUrl = '/uploads/posts/'.$safe; }
+                        else { flash('Bild konnte nicht gespeichert werden.','error'); }
                     } else {
                         flash('Ungültiges Bildformat. Erlaubt: JPG, PNG, GIF, WebP, SVG.','error');
                     }
                 }
-
                 db()->prepare('INSERT INTO posts (title,content,published,image_path) VALUES (?,?,?,?)')
                    ->execute([$title,$content,$published,$imageUrl]);
                 flash('Post erstellt.','success');
             }
+
         } elseif ($a === 'delete_post') {
             $id=(int)($_POST['id']??0);
-
-            // Bilddatei mitlöschen
-            $st = db()->prepare('SELECT image_path FROM posts WHERE id=?');
-            $st->execute([$id]);
+            $st = db()->prepare('SELECT image_path FROM posts WHERE id=?'); $st->execute([$id]);
             $img = $st->fetchColumn();
             if ($img && str_starts_with($img, '/uploads/posts/')) {
-                $p = __DIR__.$img;
-                if (is_file($p)) @unlink($p);
+                $p = __DIR__.$img; if (is_file($p)) @unlink($p);
             }
-
             db()->prepare('DELETE FROM posts WHERE id=?')->execute([$id]);
             flash('Post gelöscht.','success');
+
         } elseif ($a === 'toggle_publish') {
-            $id=(int)($_POST['id']??0); $r=db()->prepare('SELECT published FROM posts WHERE id=?'); $r->execute([$id]); $row=$r->fetch();
+            $id=(int)($_POST['id']??0);
+            $r=db()->prepare('SELECT published FROM posts WHERE id=?'); $r->execute([$id]); $row=$r->fetch();
             if ($row){ $new=((int)$row['published']===1)?0:1; db()->prepare('UPDATE posts SET published=? WHERE id=?')->execute([$new,$id]); flash($new?'Post veröffentlicht.':'Post unveröffentlicht.','success'); }
+
         } elseif ($a === 'update_post') {
             $id=(int)($_POST['id']??0); $title=trim((string)($_POST['title']??'')); $content=trim((string)($_POST['content']??'')); $published=isset($_POST['published'])?1:0;
-
             $st = db()->prepare('SELECT image_path FROM posts WHERE id=?'); $st->execute([$id]);
-            $current = $st->fetchColumn();
-            $newImage = $current;
-
+            $current = $st->fetchColumn(); $newImage = $current;
             if (isset($_FILES['post_image']) && $_FILES['post_image']['error'] === UPLOAD_ERR_OK) {
-                $tmp  = $_FILES['post_image']['tmp_name'];
-                $name = basename((string)$_FILES['post_image']['name']);
-
+                $tmp  = $_FILES['post_image']['tmp_name']; $name = basename((string)$_FILES['post_image']['name']);
                 $finfo = @finfo_open(FILEINFO_MIME_TYPE);
                 $mime  = $finfo ? finfo_file($finfo, $tmp) : '';
                 if ($finfo) finfo_close($finfo);
@@ -379,37 +389,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $ext   = pathinfo($name, PATHINFO_EXTENSION) ?: 'img';
                     $base  = preg_replace('/[^A-Za-z0-9._-]/','_', pathinfo($name, PATHINFO_FILENAME)) ?: ('img_'.time());
                     $safe  = $base.'_'.substr(sha1((string)microtime(true)),0,6).'.'.$ext;
-
                     $dir = __DIR__.'/uploads/posts';
                     if (!is_dir($dir)) @mkdir($dir, 0775, true);
                     $dest = $dir.'/'.$safe;
-
                     if (move_uploaded_file($tmp, $dest)) {
                         @chmod($dest, 0664);
                         $newImage = '/uploads/posts/'.$safe;
-
-                        // altes Bild entfernen
-                        if ($current && str_starts_with($current, '/uploads/posts/')) {
-                            $oldPath = __DIR__.$current;
-                            if (is_file($oldPath)) @unlink($oldPath);
-                        }
-                    } else {
-                        flash('Neues Bild konnte nicht gespeichert werden.','error');
-                    }
-                } else {
-                    flash('Ungültiges Bildformat. Erlaubt: JPG, PNG, GIF, WebP, SVG.','error');
-                }
+                        if ($current && str_starts_with($current, '/uploads/posts/')) { $oldPath = __DIR__.$current; if (is_file($oldPath)) @unlink($oldPath); }
+                    } else { flash('Neues Bild konnte nicht gespeichert werden.','error'); }
+                } else { flash('Ungültiges Bildformat. Erlaubt: JPG, PNG, GIF, WebP, SVG.','error'); }
             }
-
             db()->prepare('UPDATE posts SET title=?,content=?,published=?,image_path=? WHERE id=?')
                ->execute([$title,$content,$published,$newImage,$id]);
             flash('Post aktualisiert.','success');
+
         } elseif ($a === 'add_server') {
-            $name=trim((string)($_POST['name']??'')); $host=trim((string)($_POST['host']??'')); $port=(int)($_POST['port']??25565); $enabled=isset($_POST['enabled'])?1:0; $sort=(int)($_POST['sort_order']??0);
+            $name=trim((string)($_POST['name']??'')); $host=trim((string)($_POST['host']??'')); $port=(int)($_POST['port']??25565); $enabled=isset($_POST['enabled'])?1:0; $sort=(int)$_POST['sort_order']??0;
             if ($name===''||$host==='') flash('Name/Host darf nicht leer sein.','error');
             else { db()->prepare('INSERT INTO minecraft_servers (name,host,port,enabled,sort_order) VALUES (?,?,?,?,?)')->execute([$name,$host,$port,$enabled,$sort]); flash('Server hinzugefügt.','success'); }
+
         } elseif ($a === 'delete_server') {
             $id=(int)($_POST['id']??0); db()->prepare('DELETE FROM minecraft_servers WHERE id=?')->execute([$id]); flash('Server gelöscht.','success');
+
         } elseif ($a === 'server_move_up' || $a === 'server_move_down') {
             $id=(int)$_POST['id']; $cur=db()->prepare('SELECT id,sort_order FROM minecraft_servers WHERE id=?'); $cur->execute([$id]); $c=$cur->fetch();
             if ($c){
@@ -418,8 +419,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $n=db()->prepare('SELECT id,sort_order FROM minecraft_servers WHERE sort_order > ? ORDER BY sort_order ASC LIMIT 1'); $n->execute([$c['sort_order']]);
                 }
-                $nn=$n->fetch(); if($nn) server_swap_sort((int)$c['id'],(int)$nn['id']);
+                $nn=$n->fetch(); if($nn){
+                    $pdo = db(); $pdo->beginTransaction();
+                    $pdo->prepare('UPDATE minecraft_servers SET sort_order=? WHERE id=?')->execute([$nn['sort_order'], $c['id']]);
+                    $pdo->prepare('UPDATE minecraft_servers SET sort_order=? WHERE id=?')->execute([$c['sort_order'], $nn['id']]);
+                    $pdo->commit();
+                }
             }
+
         } elseif ($a === 'save_apply_settings') {
             set_setting('apply_enabled', isset($_POST['apply_enabled'])?'1':'0');
             $title = trim((string)($_POST['apply_title'] ?? 'Projekt-Anmeldung'));
@@ -428,7 +435,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             set_setting('discord_guild_id', trim((string)($_POST['discord_guild_id'] ?? '')));
             set_setting('discord_fallback_channel_id', trim((string)($_POST['discord_fallback_channel_id'] ?? '')));
             set_setting('whitelist_json_path', trim((string)($_POST['whitelist_json_path'] ?? '')) ?: '/home/crafty/crafty-4/servers/8c66e586-dbda-4c99-a447-b944b8677c88/whitelist.json');
+            set_setting('accept_dm_link', trim((string)($_POST['accept_dm_link'] ?? '')));
             flash('Einstellungen gespeichert.','success');
+
         } elseif ($a === 'discord_test_message') {
             $name = trim((string)($_POST['discord_test_name'] ?? ''));
             if ($name !== '') {
@@ -436,8 +445,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!$ok) discord_send_to_fallback("Benachrichtigung für **{$name}** (DM nicht möglich): 🔔 Test.");
                 flash('Testnachricht gesendet (oder Fallback).','success');
             }
+
         } elseif ($a === 'whitelist_check_now') {
             $n = whitelist_check_and_notify(); flash("Whitelist geprüft: {$n} neue Benachrichtigungen.",'success');
+
         } else {
             flash('Unbekannte Aktion.','error');
         }
@@ -452,10 +463,31 @@ $autoSent = whitelist_check_and_notify();
 if ($autoSent > 0) flash("Whitelist: {$autoSent} neue Einträge erkannt und benachrichtigt.", 'info');
 
 /* ---------- Daten laden ---------- */
-$users    = db()->query('SELECT id, username, is_admin, COALESCE(discord_name,"") AS discord_name FROM users ORDER BY username ASC')->fetchAll();
-$docs     = db()->query('SELECT id, filename FROM documents ORDER BY filename ASC')->fetchAll();
+$user_q = trim((string)($_GET['user_q'] ?? ''));
+
+$pdo = db();
+$usersAll = $pdo->query('SELECT id, username, is_admin, COALESCE(discord_name,"") AS discord_name FROM users ORDER BY username ASC')->fetchAll();
+
+if ($user_q !== '') {
+    $pat = '%'.str_replace(['%','_'], ['\%','\_'], mb_strtolower($user_q)).'%';
+    $st = $pdo->prepare("
+        SELECT id, username, is_admin, COALESCE(discord_name,'') AS discord_name
+        FROM users
+        WHERE lower(username) LIKE ? ESCAPE '\\'
+           OR lower(COALESCE(discord_name,'')) LIKE ? ESCAPE '\\'
+        ORDER BY username ASC
+    ");
+    $st->execute([$pat, $pat]);
+    $usersList = $st->fetchAll();
+} else {
+    $usersList = $usersAll;
+}
+
+$docs = $pdo->query('SELECT id, filename, COALESCE(is_public,0) AS is_public FROM documents ORDER BY filename ASC')->fetchAll();
+
+// Zuweisungen pro Nutzer
 $userDocs = [];
-$stmt = db()->query("
+$stmt = $pdo->query("
   SELECT u.id AS uid, d.id AS did, d.filename
   FROM users u
   LEFT JOIN user_documents ud ON ud.user_id = u.id
@@ -467,9 +499,20 @@ foreach ($stmt as $row) {
     if(!isset($userDocs[$uid])) $userDocs[$uid]=[];
     if(!empty($row['did'])) $userDocs[$uid][]=['id'=>(int)$row['did'],'filename'=>$row['filename']];
 }
-$posts   = db()->query('SELECT id, title, content, created_at, published FROM posts ORDER BY datetime(created_at) DESC')->fetchAll();
-$servers = db()->query('SELECT id, name, host, port, enabled, sort_order FROM minecraft_servers ORDER BY sort_order, name')->fetchAll();
-$apps    = db()->query("SELECT id, mc_name, mc_uuid, status FROM applications ORDER BY datetime(created_at) DESC")->fetchAll();
+
+// Öffentliche Dokumente (is_public=1)
+$docsPublic = $pdo->query('SELECT id, filename FROM documents WHERE COALESCE(is_public,0)=1 ORDER BY filename ASC')->fetchAll();
+
+// Bewerbungen (ohne „Engere Auswahl“)
+$apps = $pdo->query("
+    SELECT id, mc_name, mc_uuid, status
+    FROM applications
+    WHERE COALESCE(lower(status),'') <> 'shortlisted'
+    ORDER BY datetime(created_at) DESC
+")->fetchAll();
+
+$posts   = $pdo->query('SELECT id, title, content, created_at, published FROM posts ORDER BY datetime(created_at) DESC')->fetchAll();
+$servers = $pdo->query('SELECT id, name, host, port, enabled, sort_order FROM minecraft_servers ORDER BY sort_order, name')->fetchAll();
 
 $apply_enabled = (get_setting('apply_enabled','0') === '1');
 $apply_title   = get_setting('apply_title','Projekt-Anmeldung');
@@ -477,6 +520,7 @@ $cfg_token     = get_setting('discord_bot_token', '');
 $cfg_guild     = get_setting('discord_guild_id', '');
 $cfg_fallback  = get_setting('discord_fallback_channel_id', '');
 $cfg_whitelist = get_setting('whitelist_json_path', '/home/crafty/crafty-4/servers/8c66e586-dbda-4c99-a447-b944b8677c88/whitelist.json');
+$cfg_accept_link = get_setting('accept_dm_link', '');
 
 /* ---------- Render ---------- */
 render_header('Admin – Verwaltung');
@@ -488,26 +532,21 @@ render_header('Admin – Verwaltung');
   .badge.rejected{background:#fdecea;border-color:#f5c6cb;color:#8a1f1f}
   .badge.shortlisted{background:#fff7e6;border-color:#ffd08a;color:#8a5a00}
   .theme-dark .badge.shortlisted{background:#413214;border-color:#7a5a1e;color:#ffdca3}
-
   .btn-sm{padding:6px 8px;font-size:.9rem}
   .stack-sm{display:flex;gap:6px;flex-wrap:wrap}
   .mc-uuid{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;color:#666;font-size:.85rem}
   .doc-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border);border-radius:999px;background:var(--card);margin:2px}
-
-  /* Bewerber-Kacheln */
   .apps-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
   .app-card{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--border);border-radius:12px;background:var(--card);transition:transform .06s ease, box-shadow .06s ease;text-decoration:none;color:inherit}
   .app-card:hover{transform:translateY(-1px);box-shadow:0 2px 8px rgba(0,0,0,.08)}
   .app-head{width:32px;height:32px;border-radius:6px;background:#f0f0f0;object-fit:cover}
   .app-name{font-weight:600}
   .app-meta{display:flex;flex-direction:column}
-  .app-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
-
-  /* Scrollbare Tabellen */
-  .table-wrap{overflow:auto;max-height:360px;border:1px solid var(--border);border-radius:8px}
+  .table-wrap{overflow:auto;max-height:230px;border:1px solid var(--border);border-radius:8px}
   .table-wrap table{width:100%;border-collapse:separate;border-spacing:0;min-width:800px}
   .table-wrap th,.table-wrap td{padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap;background:var(--card)}
   .table-wrap thead th{position:sticky;top:0;background:var(--muted)}
+  .assignments-wrap{overflow:auto;max-height:188px;border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--card)}
 </style>
 <?php foreach (consume_flashes() as [$t,$m]) { echo '<div class="flash '.htmlspecialchars($t).'">'.htmlspecialchars($m).'</div>'; } ?>
 
@@ -526,15 +565,25 @@ render_header('Admin – Verwaltung');
   </div>
 
   <div class="card" style="min-width:480px">
-    <h2>Passwörter & Nutzer (scrollbar)</h2>
-    <?php if (empty($users)): ?>
-      <p><em>Keine Benutzer vorhanden.</em></p>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <h2 style="margin:0">Passwörter & Nutzer</h2>
+      <form method="get" style="display:flex;gap:6px;align-items:center">
+        <input type="text" name="user_q" value="<?=htmlspecialchars($user_q)?>" placeholder="Suche: Nutzer/Discord" />
+        <?php if ($user_q !== ''): ?>
+          <a class="btn btn-sm" href="admin.php" title="Suche zurücksetzen">Reset</a>
+        <?php endif; ?>
+        <button class="btn btn-sm" type="submit">Suchen</button>
+      </form>
+    </div>
+
+    <?php if (empty($usersList)): ?>
+      <p><em><?= $user_q !== '' ? 'Keine Treffer.' : 'Keine Benutzer vorhanden.' ?></em></p>
     <?php else: ?>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Benutzer</th><th>Rolle</th><th>Discord</th><th>Passwort setzen</th><th>Aktion</th></tr></thead>
           <tbody>
-          <?php foreach ($users as $u): ?>
+          <?php foreach ($usersList as $u): ?>
             <tr>
               <td><?=htmlspecialchars($u['username'])?></td>
               <td><?=((int)$u['is_admin']===1)?'Admin':'User'?></td>
@@ -562,7 +611,11 @@ render_header('Admin – Verwaltung');
           </tbody>
         </table>
       </div>
-      <p style="margin-top:6px"><small>Header ist fixiert, bei vielen Nutzern kannst du horizontal/vertikal scrollen.</small></p>
+      <?php if ($user_q !== ''): ?>
+        <p style="margin-top:6px"><small><?=count($usersList)?> Treffer für „<?=htmlspecialchars($user_q)?>“.</small></p>
+      <?php else: ?>
+        <!--<p style="margin-top:6px"><small>Header ist fixiert, bei vielen Nutzern kannst du horizontal/vertikal scrollen.</small></p>-->
+      <?php endif; ?>
     <?php endif; ?>
   </div>
 
@@ -570,12 +623,12 @@ render_header('Admin – Verwaltung');
     <h2>Dokument hochladen</h2>
     <form method="post" enctype="multipart/form-data">
       <input type="hidden" name="csrf" value="<?=htmlspecialchars($csrf)?>">
-      <input type="hidden" name="action" value="upload_document">
-      <input type="file" name="document" required><br><br>
+      <input type="hidden" name="action" value="upload_documents">
+      <input type="file" name="documents[]" multiple required><br><br>
       <button class="btn btn-primary" type="submit">Hochladen</button>
     </form>
   </div>
-</section>
+</section><br>
 
 <section class="row">
   <div class="card">
@@ -586,7 +639,8 @@ render_header('Admin – Verwaltung');
       <label>Benutzer<br>
         <select name="user_id" required>
           <option value="" disabled selected>– auswählen –</option>
-          <?php foreach ($users as $u): ?>
+          <option value="ALL">Alle (öffentlich)</option>
+          <?php foreach ($usersAll as $u): ?>
             <option value="<?=$u['id']?>"><?=htmlspecialchars($u['username'])?><?=$u['is_admin']?' (Admin)':''?></option>
           <?php endforeach; ?>
         </select>
@@ -605,30 +659,52 @@ render_header('Admin – Verwaltung');
 
   <div class="card">
     <h2>Zuweisungen</h2>
-    <?php if (empty($userDocs)): ?>
+    <?php if (empty($userDocs) && empty($docsPublic)): ?>
       <p><em>Keine Zuweisungen vorhanden.</em></p>
     <?php else: ?>
-      <?php foreach ($users as $u): $uid=(int)$u['id']; $list=$userDocs[$uid]??[]; ?>
-        <div style="margin-bottom:8px">
-          <strong><?=htmlspecialchars($u['username'])?>:</strong>
-          <?php if (empty($list)): ?><span style="color:#666">—</span>
-          <?php else: foreach ($list as $d): ?>
+      <div class="assignments-wrap">
+        <!-- Öffentliche Dokumente -->
+        <div style="margin-bottom:10px">
+          <strong>Öffentlich (Alle):</strong>
+          <?php if (empty($docsPublic)): ?>
+            <span style="color:#666">—</span>
+          <?php else: foreach ($docsPublic as $d): ?>
             <span class="doc-chip">
               <?=htmlspecialchars($d['filename'])?>
               <form method="post" style="display:inline">
                 <input type="hidden" name="csrf" value="<?=htmlspecialchars($csrf)?>">
                 <input type="hidden" name="action" value="unassign_document">
-                <input type="hidden" name="user_id" value="<?=$uid?>">
+                <input type="hidden" name="user_id" value="ALL">
                 <input type="hidden" name="doc_id" value="<?=$d['id']?>">
-                <button class="btn btn-sm" title="Entfernen" type="submit">✕</button>
+                <button class="btn btn-sm" title="Öffentliche Freigabe entfernen" type="submit">✕</button>
               </form>
             </span>
           <?php endforeach; endif; ?>
         </div>
-      <?php endforeach; ?>
+
+        <!-- Benutzer-Zuweisungen -->
+        <?php foreach ($usersAll as $u): $uid=(int)$u['id']; $list=$userDocs[$uid]??[]; ?>
+          <div style="margin-bottom:8px">
+            <strong><?=htmlspecialchars($u['username'])?>:</strong>
+            <?php if (empty($list)): ?><span style="color:#666">—</span>
+            <?php else: foreach ($list as $d): ?>
+              <span class="doc-chip">
+                <?=htmlspecialchars($d['filename'])?>
+                <form method="post" style="display:inline">
+                  <input type="hidden" name="csrf" value="<?=htmlspecialchars($csrf)?>">
+                  <input type="hidden" name="action" value="unassign_document">
+                  <input type="hidden" name="user_id" value="<?=$uid?>">
+                  <input type="hidden" name="doc_id" value="<?=$d['id']?>">
+                  <button class="btn btn-sm" title="Entfernen" type="submit">✕</button>
+                </form>
+              </span>
+            <?php endforeach; endif; ?>
+          </div>
+        <?php endforeach; ?>
+      </div>
     <?php endif; ?>
   </div>
-</section>
+</section><br>
 
 <section class="row">
   <div class="card" style="flex:1">
@@ -657,7 +733,7 @@ render_header('Admin – Verwaltung');
       <button class="btn btn-primary" type="submit">Server speichern</button>
     </form>
   </div>
-</section>
+</section><br>
 
 <section class="row">
   <div class="card" style="flex:1">
@@ -735,7 +811,7 @@ render_header('Admin – Verwaltung');
       </table>
     <?php endif; ?>
   </div>
-</section>
+</section><br>
 
 <?php if (isset($_GET['edit_post'])):
   $eid=(int)$_GET['edit_post']; $st=db()->prepare('SELECT id,title,content,published,image_path FROM posts WHERE id=?'); $st->execute([$eid]); $editPost=$st->fetch();
@@ -765,9 +841,9 @@ render_header('Admin – Verwaltung');
     </form>
   </div>
 </section>
-<?php endif; endif; ?>
+<?php endif; endif; ?><br>
 
-<!-- ======= Bewerbungen – Kachel-Übersicht (mit Engere Auswahl) ======= -->
+<!-- ======= Bewerbungen – Kachel-Übersicht (ohne „Engere Auswahl“) ======= -->
 <section class="row">
   <div class="card" style="flex:1">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
@@ -776,7 +852,7 @@ render_header('Admin – Verwaltung');
     </div>
 
     <?php if (empty($apps)): ?>
-      <p><em>Noch keine Bewerbungen eingegangen.</em></p>
+      <p><em>Keine Bewerbungen vorhanden (oder alle in der engeren Auswahl).</em></p>
     <?php else: ?>
       <div class="apps-grid">
         <?php foreach ($apps as $a):
@@ -820,6 +896,11 @@ render_header('Admin – Verwaltung');
 
       <h3>Whitelist</h3>
       <label>Pfad zur whitelist.json<br><input type="text" name="whitelist_json_path" value="<?=htmlspecialchars($cfg_whitelist)?>"></label><br><br>
+
+      <h3>Nachricht bei Annahme</h3>
+      <label>Einladungslink zum Extrahelden Discord Server für Mitglieder (optional)<br>
+        <input type="url" name="accept_dm_link" value="<?=htmlspecialchars($cfg_accept_link)?>" placeholder="https://dein-link.tld/willkommen">
+      </label><br><br>
 
       <button class="btn btn-primary" type="submit">Speichern</button>
     </form>

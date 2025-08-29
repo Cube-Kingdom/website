@@ -1,0 +1,5 @@
+# Erzwungenes UTF-8
+AddDefaultCharset UTF-8
+
+# HTML/PHP explizit mit Charset ausliefern
+AddType 'text/html; charset=UTF-8' .html .htm .php

@@ -24,13 +24,15 @@ try {
     die('DB-Verbindung fehlgeschlagen: ' . htmlspecialchars($e->getMessage()));
 }
 
-// --- Tabellen ---
+// --- Tabellen (Basis) ---
 $pdo->exec("
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  is_admin INTEGER NOT NULL DEFAULT 0
+  is_admin INTEGER NOT NULL DEFAULT 0,
+  discord_name TEXT,
+  calendar_color TEXT
 );
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -52,7 +54,8 @@ CREATE TABLE IF NOT EXISTS posts (
   title TEXT NOT NULL,
   content TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  published INTEGER NOT NULL DEFAULT 1
+  published INTEGER NOT NULL DEFAULT 1,
+  image_path TEXT
 );
 
 CREATE TABLE IF NOT EXISTS minecraft_servers (
@@ -83,7 +86,7 @@ CREATE TABLE IF NOT EXISTS site_settings (
   value TEXT NOT NULL
 );
 
--- Bewerbungen für Projekte
+-- Bewerbungen
 CREATE TABLE IF NOT EXISTS applications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   youtube_url TEXT NOT NULL,
@@ -92,17 +95,24 @@ CREATE TABLE IF NOT EXISTS applications (
   mc_uuid TEXT,
   discord_name TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
+  generated_password TEXT,
+  created_user_id INTEGER,
+  project_name TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ");
 
+// --- Migration: Public-Flag für World Downloads nachrüsten ---
+$cols = $pdo->query("PRAGMA table_info(documents)")->fetchAll(PDO::FETCH_ASSOC);
+$names = array_map(fn($r)=>$r['name'], $cols);
+if (!in_array('is_public', $names, true)) {
+    $pdo->exec("ALTER TABLE documents ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_documents_is_public ON documents(is_public)");
+}
+
 // --- Helper ---
-function is_post(): bool {
-    return ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST';
-}
-function db(): PDO {
-    global $pdo; return $pdo;
-}
+function is_post(): bool { return ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'; }
+function db(): PDO { global $pdo; return $pdo; }
 
 function require_login(): void {
     if (session_status() !== PHP_SESSION_ACTIVE) { session_start(); }
@@ -131,7 +141,7 @@ function ensure_setting_default(string $key, string $default): void {
     if (get_setting($key, null) === null) set_setting($key, $default);
 }
 
-// Defaults für die neue Seite
+// Defaults
 ensure_setting_default('apply_enabled', '0');
 ensure_setting_default('apply_title', 'Projekt-Anmeldung');
 

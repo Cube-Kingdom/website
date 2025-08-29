@@ -24,7 +24,15 @@ if (!function_exists('discord_notify_by_name')) {
         if (!function_exists('curl_init')) { error_log('Discord: php-curl missing'); return null; }
         $ch = curl_init($url);
         $hdr = array_merge(['Accept: application/json'], $headers);
-        curl_setopt_array($ch, [CURLOPT_CUSTOMREQUEST=>$method, CURLOPT_RETURNTRANSFER=>true, CURLOPT_TIMEOUT=>$timeout, CURLOPT_CONNECTTIMEOUT=>$timeout, CURLOPT_SSL_VERIFYPEER=>true, CURLOPT_SSL_VERIFYHOST=>2, CURLOPT_HTTPHEADER=>$hdr]);
+        curl_setopt_array($ch, [
+            CURLOPT_CUSTOMREQUEST   => $method,
+            CURLOPT_RETURNTRANSFER  => true,
+            CURLOPT_TIMEOUT         => $timeout,
+            CURLOPT_CONNECTTIMEOUT  => $timeout,
+            CURLOPT_SSL_VERIFYPEER  => true,
+            CURLOPT_SSL_VERIFYHOST  => 2,
+            CURLOPT_HTTPHEADER      => $hdr
+        ]);
         if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE));
         $resp = curl_exec($ch); if ($resp === false) { curl_close($ch); return null; }
         $code = curl_getinfo($ch, CURLINFO_RESPONSE_CODE); curl_close($ch);
@@ -45,14 +53,23 @@ if (!function_exists('discord_notify_by_name')) {
     }
     function discord_dm_user_id(string $userId, string $message): bool {
         $cfg = discord_cfg(); if ($cfg['token']==='') return false;
-        $dm = http_json('POST','https://discord.com/api/v10/users/@me/channels',['Authorization: Bot '.$cfg['token'],'Content-Type: application/json'],['recipient_id'=>$userId]);
+        $dm = http_json('POST','https://discord.com/api/v10/users/@me/channels',
+            ['Authorization: Bot '.$cfg['token'],'Content-Type: application/json'],
+            ['recipient_id'=>$userId]
+        );
         $chId = $dm['json']['id'] ?? null; if (!$chId) return false;
-        $send = http_json('POST',"https://discord.com/api/v10/channels/{$chId}/messages",['Authorization: Bot '.$cfg['token'],'Content-Type: application/json'],['content'=>$message]);
+        $send = http_json('POST',"https://discord.com/api/v10/channels/{$chId}/messages",
+            ['Authorization: Bot '.$cfg['token'],'Content-Type: application/json'],
+            ['content'=>$message]
+        );
         return ($send && $send['code']>=200 && $send['code']<300);
     }
     function discord_send_to_fallback(string $message): bool {
         $cfg = discord_cfg(); if ($cfg['token']==='' || $cfg['fallback_ch']==='') return false;
-        $send = http_json('POST',"https://discord.com/api/v10/channels/{$cfg['fallback_ch']}/messages",['Authorization: Bot '.$cfg['token'],'Content-Type: application/json'],['content'=>$message]);
+        $send = http_json('POST',"https://discord.com/api/v10/channels/{$cfg['fallback_ch']}/messages",
+            ['Authorization: Bot '.$cfg['token'],'Content-Type: application/json'],
+            ['content'=>$message]
+        );
         return ($send && $send['code']>=200 && $send['code']<300);
     }
     function discord_notify_by_name(string $discordName, string $message): void {
@@ -104,6 +121,7 @@ if (!$app) { flash('Bewerbung nicht gefunden.', 'error'); header('Location: admi
 
 $projectName = $app['project_name'] ?: get_setting('apply_title','Projekt-Anmeldung');
 $loginUrl    = 'https://www.extrahelden.de/login.php';
+$acceptLink  = get_setting('accept_dm_link', ''); // <- kommt aus admin.php Einstellungen
 
 /* --- POST Aktionen --- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -135,6 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $plain  = (string)($app['generated_password'] ?? '');
 
             if ($userId <= 0) {
+                // neuen Nutzer + Passwort erzeugen
                 $plain = generate_password(14);
                 $hash  = password_hash($plain, PASSWORD_DEFAULT);
                 $ins   = $pdo->prepare('INSERT INTO users (username,password_hash,is_admin,discord_name) VALUES (?,?,0,?)');
@@ -144,20 +163,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $upd = $pdo->prepare('UPDATE applications SET created_user_id=?, generated_password=?, status="accepted" WHERE id=?');
                 $upd->execute([$userId, $plain, $app_id]);
             } else {
+                // nur Status setzen (Passwort evtl. schon vorhanden)
                 $pdo->prepare('UPDATE applications SET status="accepted" WHERE id=?')->execute([$app_id]);
             }
 
             $pdo->commit();
 
+            // Nachricht bauen (Zugangsdaten nur anhängen, wenn ein Passwort vorliegt)
             $msg  = "✅ Deine Bewerbung für **{$projectName}** wurde **angenommen**.\n\n";
-            $msg .= "Login: **{$app['mc_name']}** / **{$plain}** (bitte Passwort sofort ändern). ";
-            $msg .= "Melde dich unter {$loginUrl} an, und erhalte alle updates zum server sowie deine persönlichen Mods.";
+            if ($plain !== '') {
+                $msg .= "Deine Zugangsdaten:\n";
+                $msg .= "• Benutzername: **{$app['mc_name']}**\n";
+                $msg .= "• Passwort: **{$plain}** (bitte direkt ändern)\n";
+            } else {
+                $msg .= "Dein Account **{$app['mc_name']}** ist nun freigeschaltet.\n";
+            }
+            $msg .= "\nAnmeldung: {$loginUrl}";
+            if ($acceptLink !== '') {
+                $msg .= "\n🔗 Zum Discord von **{$projectName}**: {$acceptLink}";
+            }
 
             if (!empty($app['discord_name'])) {
                 discord_notify_by_name($app['discord_name'], $msg);
             }
 
-            flash('Bewerbung angenommen. Nutzer angelegt und per Discord informiert (falls möglich).','success');
+            flash('Bewerbung angenommen. Nutzer angelegt/aktiviert und per Discord informiert (falls möglich).','success');
             header('Location: admin_application.php?id='.$app_id); exit;
 
         } elseif ($a === 'reject_app') {
@@ -264,6 +294,9 @@ $stClass = ($app['status']==='accepted'?'accepted':($app['status']==='rejected'?
           </p>
         <?php else: ?>
           <p><em>Noch kein Nutzer erzeugt.</em></p>
+        <?php endif; ?>
+        <?php if ($acceptLink !== ''): ?>
+          <p><small>DM-Link (aus den Einstellungen): <a href="<?=htmlspecialchars($acceptLink)?>" target="_blank" rel="noopener"><?=htmlspecialchars($acceptLink)?></a></small></p>
         <?php endif; ?>
       </div>
     </div>

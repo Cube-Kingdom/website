@@ -6,4 +6,4 @@ session_unset();
 session_destroy();
 session_start();
 $_SESSION['flash'][] = ['success','Abgemeldet.'];
-header('Location: login.php');
+header('Location: index.php');

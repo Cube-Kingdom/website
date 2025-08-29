@@ -253,14 +253,14 @@ foreach (consume_flashes() as [$t,$m]) {
 if (!$enabled): ?>
   <section class="row">
     <div class="card" style="max-width:680px">
-      <h2><?=htmlspecialchars($title)?></h2>
+      <h2><?=htmlspecialchars($title)?> Bewerbung</h2>
       <p><em>Die Anmeldung ist derzeit geschlossen.</em></p>
     </div>
   </section>
 <?php else: ?>
   <section class="row">
     <div class="card" style="max-width:680px">
-      <h2><?=htmlspecialchars($title)?></h2>
+      <h2><?=htmlspecialchars($title)?> Bewerbung</h2>
 
       <?php if (!empty($errors)): ?>
         <div class="flash error">

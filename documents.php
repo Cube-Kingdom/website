@@ -42,17 +42,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         try {
             $pdo->beginTransaction();
-            // Zuweisungen entfernen
             $pdo->prepare('DELETE FROM user_documents WHERE document_id = ?')->execute([$doc_id]);
-            // Dokument-Datensatz löschen
             $pdo->prepare('DELETE FROM documents WHERE id = ?')->execute([$doc_id]);
             $pdo->commit();
 
-            // Datei auf dem Dateisystem löschen (falls vorhanden)
             $path = (string)($doc['path'] ?? '');
-            if ($path !== '' && is_file($path)) {
-                @unlink($path);
-            }
+            if ($path !== '' && is_file($path)) { @unlink($path); }
 
             flash('Dokument gelöscht: ' . (string)$doc['filename'], 'success');
         } catch (Throwable $e) {
@@ -64,17 +59,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: documents.php'); exit;
     }
 
-    // Unbekannte Aktion
     flash('Unbekannte Aktion.', 'error');
     header('Location: documents.php'); exit;
 }
 
-/* -------- Dokumentliste laden -------- */
+/* -------- Dokumentlisten -------- */
 if ($is_admin) {
-    // Admin sieht alle Dokumente
+    // Admin: alle Dokumente
     $docs = db()->query('SELECT id, filename FROM documents ORDER BY filename ASC')->fetchAll();
 } else {
-    // Normale User sehen nur zugewiesene Dokumente
+    // User: nur zugewiesene
     $stmt = db()->prepare('
         SELECT d.id, d.filename
         FROM documents d
@@ -86,6 +80,9 @@ if ($is_admin) {
     $docs = $stmt->fetchAll();
 }
 
+// Öffentliche Dateien (zusätzliches Segment)
+$publicDocs = db()->query('SELECT id, filename FROM documents WHERE COALESCE(is_public,0)=1 ORDER BY filename ASC')->fetchAll();
+
 /* -------- Render -------- */
 render_header('Dokumente');
 foreach (consume_flashes() as [$t,$m]) {
@@ -94,6 +91,8 @@ foreach (consume_flashes() as [$t,$m]) {
 ?>
 <section>
   <h1>Dokumente</h1>
+
+  <h2><?= $is_admin ? 'Alle Dokumente' : 'Deine Dokumente' ?></h2>
   <?php if (empty($docs)): ?>
     <p><em>Keine Dokumente vorhanden.</em></p>
   <?php else: ?>
@@ -119,6 +118,25 @@ foreach (consume_flashes() as [$t,$m]) {
                 </form>
               <?php endif; ?>
             </td>
+          </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  <?php endif; ?>
+
+  <h2>Für alle (World Downloads)</h2>
+  <?php if (empty($publicDocs)): ?>
+    <p><em>Keine öffentlichen Dateien.</em></p>
+  <?php else: ?>
+    <table>
+      <thead>
+        <tr><th>Datei</th><th style="width:160px">Aktion</th></tr>
+      </thead>
+      <tbody>
+        <?php foreach ($publicDocs as $d): ?>
+          <tr>
+            <td><?=htmlspecialchars($d['filename'])?></td>
+            <td><a class="btn btn-primary" href="download.php?id=<?=$d['id']?>">Download</a></td>
           </tr>
         <?php endforeach; ?>
       </tbody>

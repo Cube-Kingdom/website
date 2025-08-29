@@ -298,15 +298,22 @@ foreach (consume_flashes() as [$t,$m]) {
           <?php endforeach; ?>
         </tbody>
       </table>
+
+      <!-- Discord-Button -->
+      <p style="margin-top:12px">
+        <a class="btn btn-primary" href="https://discord.gg/FaMFTsMYeG" target="_blank" rel="noopener">Zum Discord</a>
+      </p>
+
       <!--
       <p style="margin-top:8px"><small>Aktualisiert automatisch – 1× pro Sekunde.</small></p>
       <p><small>Klick auf „Serverstatus“ kopiert <code>extrahelden.de</code>. Klick auf Servername/Status kopiert die jeweilige IP.</small></p>
-          -->
+      -->
     <?php endif; ?>
   </div>
 </section>
 
 <div id="toast" role="status" aria-live="polite"></div>
+<a href="impressum.html">Impressum</a>
 
 <script>
 (function(){

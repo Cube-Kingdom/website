@@ -63,11 +63,11 @@ if (!function_exists('render_header')) {
       --pad:14px;
     }
 
-    /* ====== Dark Mode (freundlich, hohe Lesbarkeit) ====== */
+    /* ====== Dark Mode ====== */
     .theme-dark{
-      --bg:#1c2230;           /* kein pures Schwarz */
+      --bg:#1c2230;
       --text:#e9eef6;
-      --card:#232a3b;         /* heller als Hintergrund */
+      --card:#232a3b;
       --muted:#202738;
       --border:#35405a;
       --link:#7fb3ff;
@@ -99,7 +99,7 @@ if (!function_exists('render_header')) {
     }
     .theme-dark header.site{ background:rgba(28,34,48,.8); }
     .nav{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-    /* Brand mit Logo */
+    /* Brand */
     .brand{
       display:inline-flex;align-items:center;gap:10px;
       font-weight:700;letter-spacing:.2px;margin-right:8px;color:inherit;text-decoration:none
@@ -121,7 +121,7 @@ if (!function_exists('render_header')) {
       min-width:300px;
     }
 
-    /* ====== Eingaben/Buttons ====== */
+    /* ====== Inputs/Buttons ====== */
     input[type=text],input[type=password],input[type=url],input[type=number],select,textarea,input[type=file]{
       width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:10px;background:#fff;color:#111
     }
@@ -172,43 +172,27 @@ if (!function_exists('render_header')) {
     .flash.error{background:rgba(239,68,68,.15);border-color:rgba(239,68,68,.35)}
     .flash.info{background:rgba(59,130,246,.12);border-color:rgba(59,130,246,.30)}
 
-    /* ===== Admin: Bewerbungs-Kacheln – Dark Mode Optimierungen ===== */
-    .theme-dark .app-card{
-      background:#2a3348;
-      border-color:#3b4762;
-      color:var(--text);
+    /* ===== Menüs (Hamburger) ===== */
+    .menu{position:relative}
+    .menu .hamburger{display:inline-block;width:18px;height:14px;position:relative}
+    .menu .hamburger span,
+    .menu .hamburger::before,
+    .menu .hamburger::after{
+      content:"";display:block;height:2px;background:currentColor;border-radius:2px;position:absolute;left:0;right:0
     }
-    .theme-dark .app-card:hover{
-      box-shadow:0 4px 16px rgba(0,0,0,.45);
-      transform:translateY(-1px);
+    .menu .hamburger span{top:6px}
+    .menu .hamburger::before{top:0}
+    .menu .hamburger::after{bottom:0}
+    .dropdown{
+      position:absolute; right:0; top:calc(100% + 6px);
+      background:var(--card); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow);
+      min-width:220px; z-index:60; overflow:hidden
     }
-    a.app-card{ color:inherit; text-decoration:none; }
-    a.app-card:hover{ text-decoration:none; }
-    .app-card .app-name{ color:var(--text) !important; }
-    .theme-dark .app-head{
-      background:#24304b;
-      box-shadow:inset 0 0 0 1px #3b4762;
+    .dropdown a{
+      display:block; padding:10px 12px; color:var(--text); text-decoration:none; border-bottom:1px solid var(--border)
     }
-    .theme-dark .badge{
-      background:#2d3752;
-      border-color:#4b5b82;
-      color:#e7ecf6;
-    }
-    .theme-dark .badge.pending{
-      background:#2d3752;
-      border-color:#5f6db3;
-      color:#cfd9ff;
-    }
-    .theme-dark .badge.accepted{
-      background:#1f3a2a;
-      border-color:#2e5a42;
-      color:#bdf5d0;
-    }
-    .theme-dark .badge.rejected{
-      background:#3a2426;
-      border-color:#7a4147;
-      color:#ffd6d6;
-    }
+    .dropdown a:last-child{border-bottom:none}
+    .dropdown a:hover{background:var(--muted); text-decoration:none}
   </style>
 </head>
 <body>
@@ -218,23 +202,52 @@ if (!function_exists('render_header')) {
         <!-- Brand: Logo + Wortmarke -->
         <a href="index.php" class="brand btn btn-ghost" style="padding:6px 8px" title="Extrahelden – Startseite">
           <img class="brand-logo"
-               src="/assets/icons/favicon.svg"
+               src="/logo.png"
                onerror="this.src='/assets/icons/apple-touch-icon.png'; this.onerror=null;"
                alt="Extrahelden Logo">
           <strong>Extrahelden</strong>
         </a>
 
         <?php if ($show_nav): ?>
-          <a class="btn btn-ghost" href="index.php">Start</a>
-          <a class="btn btn-ghost" href="documents.php">Dokumente</a>
-          <?php if ($applyEnabled): ?>
-            <a class="btn btn-ghost" href="apply.php"><?=htmlspecialchars($applyTitle)?></a>
+          <?php if (!$username): ?>
+            <!-- Besucher: Direkt sichtbare Tabs -->
+            <a class="btn btn-ghost" href="index.php">Start</a>
+            <a class="btn btn-ghost" href="world_downloads.php">World Downloads</a>
+            <?php if ($applyEnabled): ?>
+              <a class="btn btn-ghost" href="apply.php"><?=htmlspecialchars($applyTitle)?> Bewerbungen</a>
+            <?php endif; ?>
+          <?php else: ?>
+            <!-- Mitglieder: Hamburger-Menü -->
+            <div class="menu">
+              <button id="memberMenuBtn" class="btn" aria-haspopup="true" aria-expanded="false" aria-controls="memberMenu" title="Mitglieder-Menü">
+                <span class="hamburger" aria-hidden="true"><span></span></span>
+                <span style="margin-left:6px">Menü</span>
+              </button>
+              <div id="memberMenu" class="dropdown" hidden>
+                <!--<a href="index.php">Start</a>-->
+                <a href="documents.php">Dokumente</a>
+                <?php if ($applyEnabled): ?>
+                  <!--<a href="apply.php"><?=htmlspecialchars($applyTitle)?></a>-->
+                <?php endif; ?>
+                <a href="support.php">Support</a>
+                <a href="account.php">Konto</a>
+              </div>
+            </div>
           <?php endif; ?>
-          <?php if ($username): ?>
-            <a class="btn btn-ghost" href="account.php">Konto</a>
-          <?php endif; ?>
+
+          <!-- Admin-Menü als Hamburger -->
           <?php if ($is_admin): ?>
-            <a class="btn btn-ghost" href="admin.php">Admin</a>
+            <div class="menu">
+              <button id="adminMenuBtn" class="btn" aria-haspopup="true" aria-expanded="false" aria-controls="adminMenu" title="Admin-Menü">
+                <span class="hamburger" aria-hidden="true"><span></span></span>
+                <span style="margin-left:6px">Admin</span>
+              </button>
+              <div id="adminMenu" class="dropdown" hidden>
+                <a href="admin.php">Admin-Dashboard</a>
+                <a href="admin_calendar.php">Kalender</a>
+                <a href="admin_tickets.php">Tickets</a>
+              </div>
+            </div>
           <?php endif; ?>
 
           <span class="spacer"></span>
@@ -253,6 +266,40 @@ if (!function_exists('render_header')) {
         <?php endif; ?>
       </div>
     </div>
+
+    <?php if ($show_nav): ?>
+    <script>
+      (function(){
+        // generische Menu-Toggler
+        function attachMenu(btnId, menuId){
+          const btn  = document.getElementById(btnId);
+          const menu = document.getElementById(menuId);
+          if (!btn || !menu) return;
+
+          function openMenu(){ menu.hidden = false; btn.setAttribute('aria-expanded','true'); }
+          function closeMenu(){ menu.hidden = true; btn.setAttribute('aria-expanded','false'); }
+
+          btn.addEventListener('click', (e)=>{
+            e.preventDefault();
+            if (menu.hidden) openMenu(); else closeMenu();
+          });
+
+          document.addEventListener('click', (e)=>{
+            if (menu.hidden) return;
+            if (e.target === btn || btn.contains(e.target)) return;
+            if (!menu.contains(e.target)) closeMenu();
+          });
+
+          document.addEventListener('keydown', (e)=>{
+            if (e.key === 'Escape') closeMenu();
+          });
+        }
+
+        attachMenu('memberMenuBtn','memberMenu');
+        attachMenu('adminMenuBtn','adminMenu');
+      })();
+    </script>
+    <?php endif; ?>
   </header>
 
   <main>
